@@ -1,0 +1,22 @@
+{
+  "domain": "grokzilla",
+  "name": "Grokzilla",
+  "version": "1.0.5",
+  "documentation": "https://github.com/KeithSBB/grokzilla",
+  "issue_tracker": "https://github.com/KeithSBB/grokzilla/issues",
+  "requirements": ["xai-sdk==1.5.0"],
+  "dependencies": ["conversation"],
+  "codeowners": ["@KeithSBB"],
+  "config_flow": true,
+  "homeassistant": "2025.11.0",
+  "iot_class": "cloud_polling",
+  "integration_type": "service",
+  "loggers": ["grokzilla"],
+
+  "services": {
+    "refresh_smart_home_file": {
+      "description": "Regenerate and upload the smart home context file to Grok.",
+      "fields": {}
+    }
+  }
+}
