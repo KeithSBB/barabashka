@@ -29,7 +29,7 @@ R = TypeVar("R")  # Represents return type
 
 
 class GrokConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[misc,call-arg]
-    """Grokzilla config flow."""
+    """Barabashka config flow."""
 
     VERSION = 1
 
@@ -41,7 +41,7 @@ class GrokConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[misc,call-arg]
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
-                title="Grokzilla", data=user_input
+                title="Barabashka", data=user_input
             )
 
         return self.async_show_form(
@@ -87,7 +87,7 @@ class GrokConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[misc,call-arg]
 
 
 class GrokOptionsFlow(OptionsFlow):  # type: ignore[misc]
-    """Grokzilla options flow.
+    """Barabashka options flow.
 
     Manages customizable options like model selection and prompts.
     """
