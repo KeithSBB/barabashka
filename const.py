@@ -5,7 +5,7 @@ such as domain, default models, prompts, and API configurations.
 """
 
 # Integration domain identifier
-DOMAIN = "grokzilla"
+DOMAIN = "barabashka"
 
 # Default xAI model (fallback for config)
 DEFAULT_MODEL = "grok-beta"
@@ -27,7 +27,7 @@ DEFAULT_PROMPT = (
     NEVER hallucinate entity states, sensor values, or temperatures. 
     If a tool returns no results or you cannot find an entity, honestly say so
     and ask the user for clarification. Example: For lights, use 
-    'grokzilla_CallService' with domain 'light', service 'turn_on', 
+    'barabashka_CallService' with domain 'light', service 'turn_on', 
     target as a JSON object with entity_id set to 'light.bedroom', 
     data as a JSON object with brightness_pct set to 50. 
     For general queries, provide concise, accurate answers."""
