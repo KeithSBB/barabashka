@@ -1,12 +1,11 @@
-"""Barabashka Sensor Collector.
+"""Barabashka Sensor Collector – Full Updated Version.
 
-This module is the heart of the Barabashka integration.
-It continuously monitors selected ambient sensors, maintains a rolling history,
-detects anomalies and patterns, and translates them into a textual "message"
-that represents the current voice/mood of the house spirit (Barabashka).
-
-The generated message is then injected as a system prompt into every Grok
-conversation so the spirit can influence responses.
+This version fully integrates with the new Barabashka options from config_flow.py:
+- Respects barabashka_enabled toggle
+- Uses user-selected sensor_entities or auto-discovers ambient sensors
+- Applies configurable sensitivity (1–10) to scale pattern detection thresholds
+- Boosts pattern strength during user-defined "spirit hours" (default 2–4 AM)
+- Persists learned pattern weights
 """
 
 from __future__ import annotations
@@ -15,8 +14,8 @@ import asyncio
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import datetime, time, timedelta
+from typing import Any, Dict, List
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
@@ -25,35 +24,43 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .const import (
+    CONF_BARABASHKA_ENABLED,
+    CONF_SENSOR_ENTITIES,
+    CONF_SENSITIVITY,
+    CONF_SPIRIT_HOURS_END,
+    CONF_SPIRIT_HOURS_START,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
-# Default sensor device classes we consider "ambient" and potentially supernatural
+# Default ambient device classes for auto-discovery
 DEFAULT_AMBIENT_CLASSES = {
     "temperature",
     "humidity",
     "pressure",
     "illuminance",
     "sound",
-    "power",  # sudden draws
+    "power",
     "voltage",
     "current",
-    "signal_strength",  # Wi-Fi/Zigbee fluctuations
+    "signal_strength",
 }
 
-# How long we keep raw history in memory (hours)
+# Rolling history retention
 HISTORY_HOURS = 48
 
-# How often we recompute the spirit message (seconds)
+# How often to recompute the spirit message
 MESSAGE_UPDATE_INTERVAL = 300  # 5 minutes
 
-# Storage key for persistent weights / learned patterns
+# Storage for learned pattern weights
 STORAGE_KEY = "barabashka_learning"
 STORAGE_VERSION = 1
 
 
 @dataclass
 class SensorReading:
-    """Single sensor reading with timestamp."""
+    """Single sensor reading."""
     timestamp: datetime
     value: float | str | None
     unit: str | None = None
@@ -61,7 +68,7 @@ class SensorReading:
 
 @dataclass
 class SensorHistory:
-    """Rolling history for one entity."""
+    """Rolling history per entity."""
     readings: deque[SensorReading] = field(default_factory=deque)
     entity_id: str = ""
     device_class: str | None = None
@@ -69,7 +76,6 @@ class SensorHistory:
 
     def append(self, reading: SensorReading) -> None:
         self.readings.append(reading)
-        # Prune old readings
         cutoff = dt_util.utcnow() - timedelta(hours=HISTORY_HOURS)
         while self.readings and self.readings[0].timestamp < cutoff:
             self.readings.popleft()
@@ -77,29 +83,44 @@ class SensorHistory:
 
 @dataclass
 class PatternWeights:
-    """Learned weights for interpreting patterns."""
-    # Example keys: "temp_drop_night", "emf_spike", "silence_3am"
+    """Learned interpretation weights."""
     weights: Dict[str, float] = field(default_factory=lambda: {
         "temp_drop_night": 0.7,
         "sudden_light_change": 0.5,
         "silence_3am": 0.8,
         "emf_spike": 0.6,
         "motion_without_cause": 0.65,
+        "humidity_rise_night": 0.55,
+        "pressure_drop": 0.6,
     })
 
 
 class BarabashkaSensorCollector:
-    """Collects ambient sensor data and speaks as the house spirit."""
+    """Collects house ambient data and speaks as the spirit Barabashka."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
         self.entry_id = entry.entry_id
 
-        # Runtime data
+        # Configurable options
+        self.enabled = entry.options.get(CONF_BARABASHKA_ENABLED, True)
+        self.sensitivity = float(entry.options.get(CONF_SENSITIVITY, 5)) / 5.0  # 0.2–2.0 multiplier
+        self.spirit_start_str = entry.options.get(CONF_SPIRIT_HOURS_START, "02:00:00")
+        self.spirit_end_str = entry.options.get(CONF_SPIRIT_HOURS_END, "04:00:00")
+
+        # Convert spirit hours to time objects
+        try:
+            self.spirit_start = datetime.strptime(self.spirit_start_str, "%H:%M:%S").time()
+            self.spirit_end = datetime.strptime(self.spirit_end_str, "%H:%M:%S").time()
+        except ValueError:
+            self.spirit_start = time(2, 0, 0)
+            self.spirit_end = time(4, 0, 0)
+
+        # Runtime state
         self.histories: Dict[str, SensorHistory] = {}
         self._unsub_trackers: List[callback] = []
-        self._current_message: str = "The house is calm and quiet. Barabashka rests."
+        self._current_message: str = "The house is calm and quiet. Barabashka rests in silence."
         self._last_message_update: datetime = dt_util.utcnow()
 
         # Persistent learning
@@ -107,52 +128,61 @@ class BarabashkaSensorCollector:
         self.weights = PatternWeights()
 
     async def async_start(self) -> None:
-        """Start collecting data and generating spirit messages."""
+        """Start the collector if Barabashka mode is enabled."""
+        if not self.enabled:
+            _LOGGER.info("Barabashka mode disabled in options – collector not starting.")
+            return
+
         await self._async_load_weights()
         await self._discover_and_subscribe_sensors()
 
-        # Periodic message recomputation
+        # Periodic spirit message updates
         self.hass.loop.create_task(self._message_update_loop())
 
-        _LOGGER.info("Barabashka sensor collector started for entry %s", self.entry_id)
+        _LOGGER.info(
+            "Barabashka sensor collector started (sensitivity: %.1fx, spirit hours: %s–%s)",
+            self.sensitivity,
+            self.spirit_start_str,
+            self.spirit_end_str,
+        )
 
     async def async_stop(self) -> None:
-        """Stop all listeners."""
+        """Unload: stop all trackers."""
         for unsub in self._unsub_trackers:
             unsub()
         self._unsub_trackers.clear()
+        await self.async_save_weights()
 
     async def _discover_and_subscribe_sensors(self) -> None:
-        """Find ambient sensors and subscribe to state changes."""
+        """Subscribe to user-selected sensors or auto-discover ambient ones."""
         entity_reg = async_get_er(self.hass)
 
-        # Get user-configured entity_ids from options (fallback to auto-discovery)
-        configured_entities: List[str] = self.entry.options.get("sensor_entities", [])
+        configured_entities: List[str] = self.entry.options.get(CONF_SENSOR_ENTITIES, [])
 
         if configured_entities:
-            entities_to_watch = configured_entities
+            entities_to_watch = [e for e in configured_entities if e in entity_reg.entities]
+            _LOGGER.info("Barabashka manually configured to watch %d sensors", len(entities_to_watch))
         else:
-            # Auto-discovery: any sensor with relevant device_class
+            # Auto-discovery
             entities_to_watch = [
-                entity.entry.entity_id
-                for entity in entity_reg.entities.values()
-                if entity.device_class in DEFAULT_AMBIENT_CLASSES
-                and not entity.disabled_by
+                ent.entity_id
+                for ent in entity_reg.entities.values()
+                if ent.device_class in DEFAULT_AMBIENT_CLASSES
+                and not ent.disabled_by
+                and ent.domain in ("sensor", "binary_sensor")
             ]
-
-        _LOGGER.debug("Barabashka watching %d sensors: %s", len(entities_to_watch), entities_to_watch)
+            _LOGGER.info("Barabashka auto-discovered %d ambient sensors", len(entities_to_watch))
 
         for entity_id in entities_to_watch:
             await self._subscribe_entity(entity_id)
 
     async def _subscribe_entity(self, entity_id: str) -> None:
-        """Subscribe to one entity and initialize its history."""
+        """Subscribe to one entity and seed history."""
         state = self.hass.states.get(entity_id)
         if state is None:
-            _LOGGER.warning("Entity %s not available, skipping", entity_id)
+            _LOGGER.debug("Entity %s unavailable, skipping subscription", entity_id)
             return
 
-        # Initialize history
         history = SensorHistory(
             entity_id=entity_id,
             device_class=state.attributes.get("device_class"),
@@ -166,23 +196,18 @@ class BarabashkaSensorCollector:
             value = state.state
 
         if value is not None:
-            history.append(SensorReading(
-                timestamp=dt_util.utcnow(),
-                value=value,
-                unit=state.attributes.get("unit_of_measurement"),
-            ))
+            history.append(
+                SensorReading(timestamp=dt_util.utcnow(), value=value, unit=state.attributes.get("unit_of_measurement"))
+            )
 
         self.histories[entity_id] = history
 
-        # Subscribe to future changes
-        unsub = async_track_state_change_event(
-            self.hass, [entity_id], self._handle_state_change
-        )
+        unsub = async_track_state_change_event(self.hass, [entity_id], self._handle_state_change)
         self._unsub_trackers.append(unsub)
 
     @callback
     def _handle_state_change(self, event: Event) -> None:
-        """Handle state change and append to history."""
+        """Append new reading."""
         entity_id = event.data["entity_id"]
         new_state = event.data["new_state"]
         if new_state is None:
@@ -201,107 +226,123 @@ class BarabashkaSensorCollector:
 
         if entity_id in self.histories:
             self.histories[entity_id].append(reading)
-        else:
-            # Rare race condition – re-subscribe
-            asyncio.create_task(self._subscribe_entity(entity_id))
 
     async def _message_update_loop(self) -> None:
-        """Periodically recompute the spirit's current message."""
+        """Background task: recompute spirit message periodically."""
         while True:
             await asyncio.sleep(MESSAGE_UPDATE_INTERVAL)
             await self._update_spirit_message()
 
     async def _update_spirit_message(self) -> None:
-        """Analyze recent history and generate new Barabashka message."""
+        """Generate new message from current patterns."""
         now = dt_util.utcnow()
         if now - self._last_message_update < timedelta(minutes=4):
-            return  # Debounce rapid calls
+            return  # debounce
 
         patterns = self._detect_patterns()
         message = self._interpret_patterns(patterns)
 
         if message != self._current_message:
             self._current_message = message
-            _LOGGER.debug("New Barabashka message: %s", message)
+            _LOGGER.debug("Barabashka speaks: %s", message)
 
         self._last_message_update = now
 
+    def _is_spirit_hour(self) -> bool:
+        """Check if current time falls within configured spirit hours."""
+        now = dt_util.utcnow().time()
+        if self.spirit_start <= self.spirit_end:
+            return self.spirit_start <= now <= self.spirit_end
+        else:  # crosses midnight
+            return now >= self.spirit_start or now <= self.spirit_end
+
     def _detect_patterns(self) -> Dict[str, float]:
-        """Detect current supernatural patterns and return strength (0.0–1.0)."""
+        """Detect supernatural patterns with sensitivity and spirit-hour boost."""
         now = dt_util.utcnow()
         hour = now.hour
         is_night = 22 <= hour or hour <= 6
-        is_3am_window = 2 <= hour <= 4
+        is_spirit_hour = self._is_spirit_hour()
 
         patterns: Dict[str, float] = defaultdict(float)
+        spirit_boost = 1.5 if is_spirit_hour else 1.0
 
         for history in self.histories.values():
             if len(history.readings) < 2:
                 continue
 
-            recent = list(history.readings)[-10:]  # last 10 readings
+            recent = list(history.readings)[-10:]
             values = [r.value for r in recent if isinstance(r.value, (int, float))]
-
             if not values:
                 continue
 
+            base_threshold = 1.0 / max(self.sensitivity, 0.5)  # higher sensitivity → lower threshold
+
             # Temperature drop at night
             if history.device_class == "temperature" and is_night:
-                if values[-1] < values[0] - 1.5:  # >1.5°C drop
-                    patterns["temp_drop_night"] = min(1.0, patterns["temp_drop_night"] + 0.8)
+                drop = values[0] - values[-1]
+                if drop > 1.0 * base_threshold:
+                    patterns["temp_drop_night"] += drop * 0.4 * self.sensitivity * spirit_boost
 
             # Sudden light change
             if history.device_class == "illuminance":
-                if abs(values[-1] - values[0]) > max(values) * 0.5:
-                    patterns["sudden_light_change"] = 0.7
+                change = abs(values[-1] - values[0]) / (max(values) + 1)
+                if change > 0.3 * base_threshold:
+                    patterns["sudden_light_change"] += change * self.sensitivity * spirit_boost
 
-            # Silence at 3 AM (low sound level)
-            if history.device_class == "sound" and is_3am_window:
-                if values[-1] < 30:  # very quiet
-                    patterns["silence_3am"] = 0.9
+            # Silence during spirit hours (sound sensor)
+            if history.device_class == "sound" and is_spirit_hour:
+                if values[-1] < 35:  # very quiet
+                    patterns["silence_3am"] += (1.0 - values[-1] / 60) * self.sensitivity * 1.2
 
-        # Boost learned weights
-        for key, strength in patterns.items():
-            patterns[key] = min(1.0, strength * self.weights.weights.get(key, 0.7))
+            # Pressure drop (storm coming or veil thinning)
+            if history.device_class == "pressure":
+                if values[0] - values[-1] > 2.0 * base_threshold:
+                    patterns["pressure_drop"] += 0.7 * self.sensitivity * spirit_boost
+
+            # Humidity rise at night
+            if history.device_class == "humidity" and is_night:
+                rise = values[-1] - values[0]
+                if rise > 5.0 * base_threshold:
+                    patterns["humidity_rise_night"] += rise * 0.1 * self.sensitivity * spirit_boost
+
+        # Apply learned weights
+        for key in patterns:
+            patterns[key] = min(1.5, patterns[key] * self.weights.weights.get(key, 0.7))
 
         return patterns
 
     def _interpret_patterns(self, patterns: Dict[str, float]) -> str:
-        """Turn detected patterns into poetic spirit speech."""
+        """Translate strongest pattern into Barabashka's voice."""
         if not patterns:
-            return "The house sleeps deeply. Barabashka watches in silence."
+            return "The house breathes slowly. Barabashka rests in the walls, watching."
 
-        # Sort by strength
-        sorted_patterns = sorted(patterns.items(), key=lambda x: x[1], reverse=True)
-        strongest = sorted_patterns[0][0]
+        strongest = max(patterns, key=patterns.get)
 
         messages = {
             "temp_drop_night": (
-                "A chill moves through the rooms. Barabashka stirs, restless in the dark. "
-                "Something unseen passes close by."
+                "A sudden chill sweeps through the rooms. Barabashka stirs uneasily, "
+                "drawing close to the hearth that is no longer lit."
             ),
             "sudden_light_change": (
-                "Light flickers without cause. The house spirit plays with shadows, "
-                "or warns of a presence just beyond sight."
+                "Lights flicker of their own accord. The house spirit plays with electricity — "
+                "or warns that something crosses the threshold."
             ),
             "silence_3am": (
-                "At the witching hour, all sound falls away. Barabashka listens intently. "
-                "The veil is thin tonight."
+                "In the deepest hour, all sound vanishes. Barabashka listens at the edge of the veil. "
+                "The night holds its breath."
             ),
-            "emf_spike": (
-                "Invisible energy surges through the walls. Barabashka laughs softly – "
-                "or growls at an intruder from the other side."
+            "pressure_drop": (
+                "The air thickens and presses down. Barabashka feels the weight of worlds brushing against this one."
             ),
-            "motion_without_cause": (
-                "Footsteps where no feet walk. The house spirit follows you, curious or protective."
+            "humidity_rise_night": (
+                "Dampness rises from nowhere. The house spirit remembers old rivers that once flowed beneath the foundations."
             ),
         }
 
-        # Use strongest pattern, fall back to generic
-        return messages.get(strongest, "Barabashka whispers faintly. The house remembers.")
+        return messages.get(strongest, "Barabashka murmurs softly. Something stirs in the quiet spaces between things.")
 
     def get_current_spirit_message(self) -> str:
-        """Return the latest message for injection into Grok chat."""
+        """Public accessor for the conversation agent."""
         return self._current_message
 
     async def _async_load_weights(self) -> None:
@@ -309,8 +350,8 @@ class BarabashkaSensorCollector:
         data = await self.store.async_load()
         if data and "weights" in data:
             self.weights.weights.update(data["weights"])
-            _LOGGER.debug("Loaded Barabashka learned weights")
+            _LOGGER.debug("Loaded Barabashka learned pattern weights")
 
     async def async_save_weights(self) -> None:
-        """Save current weights to persistent storage."""
+        """Persist current weights."""
         await self.store.async_save({"weights": self.weights.weights})
