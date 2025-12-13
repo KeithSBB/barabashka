@@ -11,7 +11,7 @@
   "homeassistant": "2025.11.0",
   "iot_class": "cloud_polling",
   "integration_type": "service",
-  "loggers": ["grokzilla"],
+  "loggers": ["barabashka"],
 
   "services": {
     "refresh_smart_home_file": {
