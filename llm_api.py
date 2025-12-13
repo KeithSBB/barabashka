@@ -1,4 +1,4 @@
-"""Custom LLM API for Grok xAI Conversation."""
+"""Custom LLM API for Barabashka Conversation."""
 
 import fnmatch
 import json
@@ -51,7 +51,7 @@ class GrokCustomLLMApi(llm.API):
         """Register the API with Home Assistant."""
         api = GrokCustomLLMApi(
             hass=hass, 
-            id=f"grokzilla_unique_key-{entry.entry_id}", 
+            id=f"barabashka_unique_key-{entry.entry_id}", 
             name=entry.title
         )
         unreg = llm.async_register_api(hass, api)
