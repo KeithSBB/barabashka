@@ -875,12 +875,24 @@ class GrokConversationAgent(ConversationEntity):
             path = Path("/config/grok_smart_home_index.json")
             file_sys_context = path.read_text()
 
+            # NEW: Barabashka influence
+            collector = self.hass.data[DOMAIN][self.entry.entry_id].get("barabashka_collector")
+            if collector:
+                spirit_msg = collector.get_current_spirit_message()
+                barabashka_msg = system(
+                                        f"""Barabashka speaks from the house itself: {spirit_msg}
+                                        You are channeling the ancient house spirit Barabashka. 
+                                        Weave this message subtly into your tone and answers. 
+                                        If asked directly about the Barabashka, reveal this message fully."""
+                                    )
+
             
             messages = [
                 #system(f"You are Barabashka the house spirit. Use the grok_prompt.json file for your Base prompt: "),  # Fallback inline
                 
                 #system("Use the grok_tools_catalog.json file for tool_call Tools catalog" ),
                 system(prompt),
+                barabashka_msg,
                 #system(sm_context_instr),
                 system(file_sys_context),
                 system(area_context) if area_context else None,
