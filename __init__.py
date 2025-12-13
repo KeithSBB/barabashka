@@ -12,6 +12,8 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from .const import DOMAIN
 from .llm_api import GrokCustomLLMApi
 
+from .barabashka_sensor_collector import BarabashkaSensorCollector
+
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.CONVERSATION]
 
@@ -27,6 +29,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # 2. Initialize Data
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {}
+    collector = BarabashkaSensorCollector(hass, entry)
+    hass.data[DOMAIN][entry.entry_id]["barabashka_collector"] = collector
+    await collector.async_start()
+
+    # Store cleanup for unload
+    hass.data[DOMAIN][entry.entry_id]["cleanup_unsub"] = collector.async_stop
 
     # 3. Set up Platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
