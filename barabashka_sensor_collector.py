@@ -99,6 +99,7 @@ class BarabashkaSensorCollector:
     """Collects house ambient data and speaks as the spirit Barabashka."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        _LOGGER.info("Initializing BarabashkaSensorCollector")
         self.hass = hass
         self.entry = entry
         self.entry_id = entry.entry_id
@@ -148,6 +149,7 @@ class BarabashkaSensorCollector:
 
     async def async_stop(self) -> None:
         """Unload: stop all trackers."""
+        _LOGGER.info("Stop all trackers")
         for unsub in self._unsub_trackers:
             unsub()
         self._unsub_trackers.clear()
@@ -232,6 +234,8 @@ class BarabashkaSensorCollector:
         while True:
             await asyncio.sleep(MESSAGE_UPDATE_INTERVAL)
             await self._update_spirit_message()
+            _LOGGER.info("Spirit Message updated")
+
 
     async def _update_spirit_message(self) -> None:
         """Generate new message from current patterns."""

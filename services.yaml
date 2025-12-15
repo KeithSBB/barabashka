@@ -1,0 +1,3 @@
+refresh_smart_home_file:
+  description: Regenerate and upload the smart home context file to Grok.
+  fields: {}

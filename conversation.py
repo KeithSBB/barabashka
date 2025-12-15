@@ -70,6 +70,7 @@ from xai_sdk.tools import code_execution, web_search, get_tool_call_type
 
 from .const import (
     AREA_CONTEXT_TEMPLATE,
+    BARABASHKA_COLLECTOR,
     CLEANUP_INTERVAL,
     CONF_API_KEY,
     DEFAULT_API_TIMEOUT,
@@ -122,7 +123,8 @@ async def async_setup_entry(
 
     # Store agent
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {"agent": agent}
+    hass.data[DOMAIN].setdefault(entry.entry_id, {})
+    hass.data[DOMAIN][entry.entry_id]["agent"] = agent  
     
     # Initialize only prompt + context at startup (tools will come after pipeline loads)
     await agent.file_manager.async_ensure_file(FILE_TYPE_PROMPT)
@@ -253,12 +255,14 @@ async def async_generate_smart_home_file(hass: HomeAssistant, entry: ConfigEntry
 
         
     # Entities — the most important part
+    skipped_count = 0
+    disabled_count = 0
     for ent_reg in erl.entities.values():
         if not async_should_expose(hass, conversation.DOMAIN, ent_reg.entity_id):
-            _LOGGER.debug("Skipping non-exposed entity; %s", ent_reg.entity_id)
+            skipped_count += 1
             continue
         if ent_reg.disabled_by or ent_reg.entity_id.startswith("sensor.") and "hidden" in ent_reg.entity_id:
-            _LOGGER.debug("Skipping disabled or hidden entity: %s", ent_reg.entity_id)
+            disabled_count += 1
             continue
     
         entity_id = ent_reg.entity_id
@@ -284,6 +288,9 @@ async def async_generate_smart_home_file(hass: HomeAssistant, entry: ConfigEntry
             "aliases": list(ent_reg.aliases) or [],
             "labels": list(ent_reg.labels) or []
             }
+    _LOGGER.debug("%s entities were skipped and %s are disabled", 
+                    skipped_count, disabled_count)
+
 
     # ------------------------------------------------------------------
     # 3. Write the file (readable by Grok via file read tool)
@@ -876,7 +883,9 @@ class GrokConversationAgent(ConversationEntity):
             file_sys_context = path.read_text()
 
             # NEW: Barabashka influence
-            collector = self.hass.data[DOMAIN][self.entry.entry_id].get("barabashka_collector")
+            barabashka_msg = system("The house is calm and quiet. Barabashka rests in silence, watching.")
+            collector = self.hass.data[DOMAIN][self.entry.entry_id].get(BARABASHKA_COLLECTOR)
+
             if collector:
                 spirit_msg = collector.get_current_spirit_message()
                 barabashka_msg = system(
@@ -885,6 +894,9 @@ class GrokConversationAgent(ConversationEntity):
                                         Weave this message subtly into your tone and answers. 
                                         If asked directly about the Barabashka, reveal this message fully."""
                                     )
+            else:
+                _LOGGER.warning("Spirit collector is missing")
+                
 
             
             messages = [
@@ -1088,7 +1100,7 @@ class GrokConversationAgent(ConversationEntity):
                   
                     _LOGGER.debug("Logprobs: %s", result.logprobs)
                     _LOGGER.debug("Process chunk: %s", result.process_chunk)
-                    _LOGGER.debug("Protobuffer: %s", result.proto)
+                    #_LOGGER.debug("Protobuffer: %s", result.proto)
                     _LOGGER.debug("Reasoning content: %s", result.reasoning_content)
                     _LOGGER.debug("request settings: %s", result.request_settings)
                     _LOGGER.debug("role: %s", result.role)

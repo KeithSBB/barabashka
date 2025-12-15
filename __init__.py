@@ -9,7 +9,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN
+from .const import DOMAIN, BARABASHKA_COLLECTOR
 from .llm_api import GrokCustomLLMApi
 
 from .barabashka_sensor_collector import BarabashkaSensorCollector
@@ -30,7 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {}
     collector = BarabashkaSensorCollector(hass, entry)
-    hass.data[DOMAIN][entry.entry_id]["barabashka_collector"] = collector
+    hass.data[DOMAIN][entry.entry_id][BARABASHKA_COLLECTOR] = collector
     await collector.async_start()
 
     # Store cleanup for unload

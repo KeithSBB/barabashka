@@ -1,8 +1,16 @@
-"""Constants for the Grok xAI Conversation integration.
+"""Constants for the barabashka Conversation integration.
 
 This file centralizes all static values used across the integration,
 such as domain, default models, prompts, and API configurations.
 """
+
+# Enable or disable house spirit integration
+BARABASHKA_COLLECTOR = "barabashka_collector"
+CONF_BARABASHKA_ENABLED = "barabashka_enabled"
+CONF_SENSOR_ENTITIES = "sensor_entities"
+CONF_SENSITIVITY = "sensitivity"
+CONF_SPIRIT_HOURS_START = "spirit_hours_start"
+CONF_SPIRIT_HOURS_END = "spirit_hours_end"
 
 # Integration domain identifier
 DOMAIN = "barabashka"
