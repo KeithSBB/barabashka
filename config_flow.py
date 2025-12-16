@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import selector
+from homeassistant.helpers import selector, llm
 from homeassistant.helpers.selector import (
     EntitySelector,
     EntitySelectorConfig,
@@ -71,7 +71,8 @@ class GrokConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle reconfiguration (e.g., change API key)."""
         entry = self._get_reconfigure_entry()
         if user_input is not None:
-            return self.async_update_reload_and_abort(entry, data_updates=user_input)
+            return self.async_update_reload_and_abort(entry, 
+                                                      data_updates=user_input)
 
         return self.async_show_form(
             step_id="reconfigure",
@@ -97,10 +98,6 @@ class GrokConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class BarabashkaOptionsFlow(config_entries.OptionsFlow):
     """Options flow with full Barabashka controls."""
-    
-    # def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-    #     """Initialize options flow."""
-    #     super().__init__(config_entry)
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -109,25 +106,28 @@ class BarabashkaOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        base_schema = await self._async_get_options_schema(self.hass)
+        schema_with_suggested = self.add_suggested_values_to_schema(
+            base_schema, self.config_entry.options
+        )
+
         return self.async_show_form(
             step_id="init",
-            data_schema=await self._async_get_options_schema(self.hass),
+            data_schema=schema_with_suggested,
             description_placeholders={"title": self.config_entry.title},
         )
 
     async def _async_get_options_schema(self, hass: HomeAssistant) -> vol.Schema:
         """Build the complete options schema including Barabashka features."""
-        # Load available LLM APIs for the original selector
-        try:
-            apis: list[SelectOptionDict] = [
-                SelectOptionDict(label=api.name, value=api.id)
-                for api in hass.data.get("llm", {}).get("apis", [])
-            ]
-        except Exception as err:
-            _LOGGER.warning("Failed to load LLM APIs for options: %s", err)
-            apis = []
+        # Canonical way to get registered LLM APIs → list[llm.API] with .name and .id
+        apis = llm.async_get_apis(hass)
+        api_options: list[SelectOptionDict] = [
+            SelectOptionDict(label=api.name, value=api.id) for api in apis
+        ]
 
-        # Entity selector limited to ambient sensors
+        if not api_options:
+            _LOGGER.warning("No LLM APIs registered yet – selector will be empty until reload")
+
         entity_selector = EntitySelector(
             EntitySelectorConfig(
                 domain=["sensor", "binary_sensor"],
@@ -155,27 +155,33 @@ class BarabashkaOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Optional(CONF_LLM_HASS_API): SelectSelector(
                     SelectSelectorConfig(
-                        options=apis,
+                        options=api_options,
                         multiple=True,
                         mode=SelectSelectorMode.LIST,
                     )
                 ),
 
                 # --- Barabashka supernatural controls ---
-                vol.Optional(CONF_BARABASHKA_ENABLED, default=True): selector.BooleanSelector(),
+                vol.Optional(
+                    CONF_BARABASHKA_ENABLED,
+                    default=True,
+                    description={"suggested_value": True},  # Optional: helps pre-check if saved
+                ): selector.BooleanSelector(),
 
                 vol.Optional(
                     CONF_SENSOR_ENTITIES,
-                    description=(
-                        "Choose specific sensors for Barabashka to listen to. "
-                        "Leave empty to auto-discover all ambient sensors."
-                    ),
+                    description={
+                        "suggested_value": None,  # Placeholder – actual entities pre-filled via add_suggested_values
+                        "description": "Choose specific sensors for Barabashka to listen to. Leave empty to auto-discover all ambient sensors."
+                    },
                 ): entity_selector,
 
                 vol.Optional(
                     CONF_SENSITIVITY,
                     default=5,
-                    description="How sensitive Barabashka is to subtle changes (1 = calm, 10 = highly attuned)",
+                    description={
+                        "description": "How sensitive Barabashka is to subtle changes (1 = calm, 10 = highly attuned)"
+                    },
                 ): NumberSelector(
                     NumberSelectorConfig(
                         min=1,
@@ -188,13 +194,17 @@ class BarabashkaOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_SPIRIT_HOURS_START,
                     default="02:00:00",
-                    description="Start of the witching hours when the veil is thinnest",
+                    description={
+                        "description": "Start of the witching hours when the veil is thinnest"
+                    },
                 ): TimeSelector(),
 
                 vol.Optional(
                     CONF_SPIRIT_HOURS_END,
                     default="04:00:00",
-                    description="End of the witching hours",
+                    description={
+                        "description": "End of the witching hours"
+                    },
                 ): TimeSelector(),
             }
         )

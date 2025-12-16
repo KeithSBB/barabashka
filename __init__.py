@@ -15,7 +15,7 @@ from .llm_api import GrokCustomLLMApi
 from .barabashka_sensor_collector import BarabashkaSensorCollector
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS: list[Platform] = [Platform.CONVERSATION]
+PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Grokzilla from a config entry."""

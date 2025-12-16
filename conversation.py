@@ -112,12 +112,14 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
     ) -> None:
     """Set up the Grok conversation agent."""
-    _LOGGER.info("Seting up Grokzilla with xai_sdk version = %s", xai__version__)
+    _LOGGER.info("Seting up Barabashka with xai_sdk version = %s", xai__version__)
     config = {**entry.data, **entry.options}
 
     api_key = config[CONF_API_KEY]
     model = config.get("model", DEFAULT_MODEL)
     prompt = config.get("prompt", DEFAULT_PROMPT)
+    
+    _LOGGER.info("Using Grok model: %s", model)
 
     agent = GrokConversationAgent(hass, entry, api_key, model, prompt)
 
@@ -602,6 +604,13 @@ class GrokConversationAgent(ConversationEntity):
         self.area_reg = ar.async_get(hass)
         self.floor_reg = fr.async_get(hass)
         self.dev_reg = dr.async_get(hass)
+        
+        # useage metrics
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_reasoning_tokens = 0
+        self.total_cached_tokens = 0  # If available
+        self.session_start = datetime.now(timezone.utc)
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added."""
@@ -1120,16 +1129,43 @@ class GrokConversationAgent(ConversationEntity):
         'num_sources_used', 'prompt_image_tokens', 'prompt_text_tokens', 
         'prompt_tokens', 'reasoning_tokens', 'server_side_tools_used', 
         'total_tokens'"""
-        _LOGGER.debug("cached_prompt_text_tokens: %s", response.usage.cached_prompt_text_tokens)
-        _LOGGER.debug("completion_tokens: %s", response.usage.completion_tokens)
-        _LOGGER.debug("num_sources_used: %s", response.usage.num_sources_used)
-        _LOGGER.debug("prompt_image_tokens': %s", response.usage.prompt_image_tokens)
-        _LOGGER.debug("prompt_text_tokens: %s", response.usage.prompt_text_tokens)
-        _LOGGER.debug("prompt_tokens: %s", response.usage.prompt_tokens)
-        _LOGGER.debug("reasoning_tokens: %s", response.usage.reasoning_tokens)
-        _LOGGER.debug("server_side_tools_used: %s", response.usage.server_side_tools_used)
-        _LOGGER.debug("total_tokens: %s", response.usage.total_tokens)
+        
+        usage = response.usage
+        self.total_prompt_tokens += usage.prompt_tokens or (usage.prompt_text_tokens + usage.prompt_image_tokens)
+        self.total_completion_tokens += usage.completion_tokens
+        self.total_reasoning_tokens += getattr(usage, "reasoning_tokens", 0)
+        self.total_cached_tokens += getattr(usage, "cached_prompt_text_tokens", 0)
+        # _LOGGER.debug("cached_prompt_text_tokens: %s", response.usage.cached_prompt_text_tokens)
+        # _LOGGER.debug("completion_tokens: %s", response.usage.completion_tokens)
+        # _LOGGER.debug("num_sources_used: %s", response.usage.num_sources_used)
+        # _LOGGER.debug("prompt_image_tokens': %s", response.usage.prompt_image_tokens)
+        # _LOGGER.debug("prompt_text_tokens: %s", response.usage.prompt_text_tokens)
+        # _LOGGER.debug("prompt_tokens: %s", response.usage.prompt_tokens)
+        # _LOGGER.debug("reasoning_tokens: %s", response.usage.reasoning_tokens)
+        # _LOGGER.debug("server_side_tools_used: %s", response.usage.server_side_tools_used)
+        # _LOGGER.debug("total_tokens: %s", response.usage.total_tokens)
 
+    @property
+    def extra_state_attributes(self) -> dict:
+        attrs = super().extra_state_attributes or {}
+        total_tokens = self.total_prompt_tokens + self.total_completion_tokens + self.total_reasoning_tokens
+        # Rough cost estimate (update rates from https://x.ai/api or docs.x.ai/docs/models)
+        # Example for grok-4 family ~2025: ~$3/M input, $15/M output (adjust per your model!)
+        input_cost = (self.total_prompt_tokens / 1_000_000) * 3.0
+        output_cost = (self.total_completion_tokens / 1_000_000) * 15.0
+        attrs.update({
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+            "total_reasoning_tokens": self.total_reasoning_tokens,
+            "total_cached_tokens": self.total_cached_tokens,
+            "total_tokens_used": total_tokens,
+            "estimated_input_cost_usd": round(input_cost, 4),
+            "estimated_output_cost_usd": round(output_cost, 4),
+            "estimated_total_cost_usd": round(input_cost + output_cost, 4),
+            "session_duration_minutes": round((datetime.now(timezone.utc) - self.session_start).total_seconds() / 60, 1),
+            "last_response_created": _to_naive_utc(response.created) if 'response' in locals() else None,
+        })
+        return attrs
 
     def _vol_to_json_schema(self, vs: Any) -> dict:
         """Convert Voluptuous schema with HA selectors → valid xAI JSON schema.

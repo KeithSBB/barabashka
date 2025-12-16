@@ -127,6 +127,12 @@ class BarabashkaSensorCollector:
         # Persistent learning
         self.store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self.weights = PatternWeights()
+        
+        # New runtime diagnostics for monitoring
+        self.anomaly_log: deque[tuple[datetime, str, float | None, float]] = deque(maxlen=100)
+        self.recent_messages: deque[str] = deque(maxlen=50)  # Store last spoken messages
+        self.sample_count: int = 0
+        self.last_patterns: Dict[str, float] = {}  # For detecting weight changes
 
     async def async_start(self) -> None:
         """Start the collector if Barabashka mode is enabled."""
@@ -236,20 +242,47 @@ class BarabashkaSensorCollector:
             await self._update_spirit_message()
             _LOGGER.info("Spirit Message updated")
 
+    async def async_update_anomalies(self) -> None:
+        """public wrapper for self._update_spirit_message()"""
+        await self._update_spirit_message()
 
     async def _update_spirit_message(self) -> None:
-        """Generate new message from current patterns."""
+        """Generate new message from current patterns and log for monitoring."""
         now = dt_util.utcnow()
         if now - self._last_message_update < timedelta(minutes=4):
             return  # debounce
 
         patterns = self._detect_patterns()
-        message = self._interpret_patterns(patterns)
 
+        # Log significant patterns as "anomalies" with deviation score
+        total_score = sum(patterns.values())
+        for pattern, strength in patterns.items():
+            if strength > 0.3:  # Only log meaningful signals
+                self.anomaly_log.append((
+                    now,
+                    pattern,
+                    strength,
+                    strength  # using strength as "deviation" for z-like scoring
+                ))
+
+        # Update sample count
+        self.sample_count += 1
+
+        message = self._interpret_patterns(patterns)
         if message != self._current_message:
             self._current_message = message
-            _LOGGER.debug("Barabashka speaks: %s", message)
+            self.recent_messages.append(f"{now.isoformat()}: {message}")
+            _LOGGER.info("Barabashka speaks: %s", message)
 
+            # Optional: boost learning on strong signals
+            if total_score > 1.0:
+                strongest = max(patterns, key=patterns.get)
+                self.weights.weights[strongest] = min(
+                    1.5, self.weights.weights.get(strongest, 0.7) + 0.05 * self.sensitivity
+                )
+                await self.async_save_weights()
+
+        self.last_patterns = patterns
         self._last_message_update = now
 
     def _is_spirit_hour(self) -> bool:
@@ -259,6 +292,28 @@ class BarabashkaSensorCollector:
             return self.spirit_start <= now <= self.spirit_end
         else:  # crosses midnight
             return now >= self.spirit_start or now <= self.spirit_end
+            
+    def current_anomaly_score(self) -> float:
+        """Current overall supernatural activity level."""
+        if not self.last_patterns:
+            return 0.0
+        return sum(self.last_patterns.values())
+
+    def generate_learning_notes(self) -> str:
+        """Human-readable notes on what Barabashka is learning."""
+        if not self.last_patterns:
+            return "No patterns detected yet. Listening to the house..."
+
+        top_patterns = sorted(self.last_patterns.items(), key=lambda x: x[1], reverse=True)[:3]
+        notes = []
+        for pattern, strength in top_patterns:
+            current_weight = self.weights.weights.get(pattern, 0.7)
+            notes.append(f"{pattern.replace('_', ' ').title()} (strength: {strength:.2f}, weight: {current_weight:.2f})")
+
+        if any(strength > 0.8 for strength in self.last_patterns.values()):
+            notes.append("Strong signals detected – Barabashka is active tonight.")
+
+        return "; ".join(notes)
 
     def _detect_patterns(self) -> Dict[str, float]:
         """Detect supernatural patterns with sensitivity and spirit-hour boost."""
@@ -359,3 +414,37 @@ class BarabashkaSensorCollector:
     async def async_save_weights(self) -> None:
         """Persist current weights."""
         await self.store.async_save({"weights": self.weights.weights})
+        
+    def get_monitor_data(self) -> dict:
+        """Compile data for the Barabashka Spirit Monitor entity."""
+        # Derive mood from recent activity (folklore flavor)
+        recent_scores = [dev for _, _, _, dev in list(self.anomaly_log)[-5:]]
+        recent_score = sum(recent_scores)
+        
+        if recent_score > 8:
+            mood = "restless"      # Poltergeist activity rising
+        elif recent_score > 4:
+            mood = "playful"       # Mischievous knocking and flickers
+        elif recent_score == 0 and self.sample_count > 10:
+            mood = "content"       # Peaceful domovoi, household in harmony
+        else:
+            mood = "listening"     # Waiting at the threshold
+
+        return {
+            "mood": mood,
+            "weights": dict(self.weights.weights),  # Convert to plain dict for JSON
+            "recent_anomalies": [
+                {
+                    "time": t.isoformat(),
+                    "pattern": s,
+                    "strength": float(v) if v is not None else None,
+                    "score": float(d),
+                }
+                for t, s, v, d in list(self.anomaly_log)[-10:]
+            ],
+            "decoded_messages": list(self.recent_messages)[-20:],
+            "total_samples": self.sample_count,
+            "current_score": round(self.current_anomaly_score(), 3),
+            "last_anomaly": self.anomaly_log[-1][0].isoformat() if self.anomaly_log else None,
+            "notes": self.generate_learning_notes(),
+        }
